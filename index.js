@@ -65,7 +65,7 @@ function ffmpegPaletteProcess(dlFileName, fileName, cb) {
 			'-ss', '30',
 			'-t', '3',
 			'-i', dlFileName,
-			'-vf', 'fps=10,scale=320:-1:flags=lanczos,palettegen',
+			'-vf', 'fps=10,scale=' + config.width + ':-1:flags=lanczos,palettegen',
 			fileName + '.png'
 		],
 		{

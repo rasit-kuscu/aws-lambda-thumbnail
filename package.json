@@ -2,12 +2,8 @@
   "name": "aws-lambda-ffmpeg",
   "version": "1.0.0",
   "private": true,
-  "description": "AWS Lambda function to generate a thumbnail",
-  "main": "index.js",
-  "scripts": {
-    "postinstall": "./node_modules/.bin/gulp postinstall",
-    "test": "node test.js"
-  },
+  "description": "AWS Lambda function to generate a video preview",
+  "main": "index.js"
   "keywords": [
     "aws",
     "lambda",

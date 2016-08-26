@@ -1,4 +1,5 @@
 {
 	"sourceBucket": "simple-storage-thingsix",
-	"destinationBucket": "simple-storage-thingsix-thumbnail"
+	"destinationBucket": "simple-storage-thingsix-thumbnail",
+	"width": 320
 }
