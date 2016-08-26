@@ -1,3 +1,3 @@
-# digitalsignage-awslambda-ffmpeg
+# aws-lambda-ffmpeg-preview 
 
 npm install --save
