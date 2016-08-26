@@ -1,3 +1,3 @@
-# aws-lambda-ffmpeg-preview 
+# aws-lambda-thumbnail
 
-npm install --save
+npm install
