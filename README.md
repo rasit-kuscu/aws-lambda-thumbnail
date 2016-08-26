@@ -1,3 +1,3 @@
 # aws-lambda-thumbnail
 
-npm install
+npm install --production
