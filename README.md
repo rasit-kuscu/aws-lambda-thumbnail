@@ -4,4 +4,13 @@ npm install --production
 
 aws lambda function description should be
 
-{"width":320,"api":{"url":"http://","username":"rasit","password":"123456"}}
+```json
+{
+  "width":320,
+  "api": {
+    "url": "http://",
+    "username": "rasit",
+    "password": "123456"
+    }
+}
+```
