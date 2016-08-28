@@ -2,6 +2,10 @@
 
 npm install --production
 
+<S3_BUCKET_NAME>
+<S3_BUCKET_NAME>-thumbnail
+
+
 aws lambda function description should be
 
 ```json
