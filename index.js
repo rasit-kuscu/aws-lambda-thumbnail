@@ -2,17 +2,126 @@ process.env['NODE_ENV'] = 'production';
 process.env['PATH'] += ':' + process.env['LAMBDA_TASK_ROOT'];
 
 var child_process = require('child_process');
+var request = require('request');
+var async = require('async');
 var fs = require('fs');
 var util = require('util');
 var path = require('path');
 var AWS = require('aws-sdk');
-var async = require('async');
 var gm = require('gm').subClass({
     imageMagick: true
 });
-var config = require('./config');
 var s3 = new AWS.S3();
 var tempDir = process.env['TEMP'] || '/tmp';
+
+function updateVideoDuration(keyPrefix, duration, url, username, password, cb) {
+    var originalName = keyPrefix.substr(keyPrefix.lastIndexOf('/') + 1) + ".mp4";
+    async.series([
+        function login(next) {
+            request.post(url + 'auth', {
+                json: {
+                    username: username,
+                    password: password
+                }
+            }, function(error, response, body) {
+                if (!error && response.statusCode == 200) {
+                    next(null, response.body.token);
+                } else {
+                    console.log("Could not connect api!");
+                    next(null);
+                }
+            });
+        },
+        function update(next, token) {
+            request.post(url + 'gallery/update_video_duration', {
+                json: {
+                    original: originalName,
+                    duration: duration
+                },
+                headers: {
+                    'Authorization': 'Bearer ' + token
+                }
+            }, function(error, response, body) {
+                if (!error && response.statusCode == 200) {
+                    console.log(originalName + " duration has been set to " + duration + " seconds");
+                } else {
+                    console.log(originalName + " duration could not saved ! (" + duration + ") seconds");
+                }
+                next(null);
+            });
+        }
+    ], function(err, stdout, stderr) {
+      return cb(err, 'Update video duration finished:' + JSON.stringify({
+          stdout: stdout,
+          stderr: stderr
+      }));
+    });
+}
+
+function getVideoDuration(dlFileName, cb) {
+    console.log('Getting video duration.');
+
+    child_process.execFile(
+        'ffprobe', [
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            dlFileName
+        ], {
+            cwd: tempDir
+        },
+        function(err, stdout, stderr) {
+          return cb(null, parseDuration(stdout));
+        }
+    );
+}
+
+function parseDuration(json) {
+    var responseDuration = 0;
+    try {
+        var ffprobeResponse = JSON.parse(json);
+        if (typeof ffprobeResponse.format != 'undefined') {
+            if (typeof ffprobeResponse.format.duration != 'undefined') {
+                var rawDuration = ffprobeResponse.format.duration + '';
+                var durationArr = rawDuration.split('.');
+                durationArr.pop();
+
+                if (durationArr.length > 0) {
+                    responseDuration = durationArr.join('.');
+                } else {
+                    responseDuration = ffprobeResponse.format.duration;
+                }
+            }
+        }
+    } catch (err) {
+        console.log("Could not parse video duration");
+    }
+
+    return responseDuration;
+}
+
+function setVideoDuration(dlFileName, keyPrefix, runtimeConfiguration, cb) {
+  async.waterfall([
+      function(cb) {
+          getVideoDuration(dlFileName, cb);
+      },
+      function(duration, cb) {
+          updateVideoDuration(keyPrefix, duration, runtimeConfiguration.api.url, runtimeConfiguration.api.username, runtimeConfiguration.api.password, cb);
+      }
+  ], cb);
+}
+
+function generateFileName(key, extension) {
+    var filename = key.substr(key.lastIndexOf('/') + 1);
+    var key = key.split('/');
+    key.pop();
+    var delimiter = '';
+    var total = key.length;
+    if (total > 0) {
+        delimiter = '/';
+    }
+    return (key.join('/') + delimiter + 'thumbnail-' + filename + '.' + extension);
+}
 
 function downloadStream(bucket, file, cb) {
     console.log('Starting download');
@@ -42,7 +151,7 @@ function uploadFile(bucket, keyPrefix, cb) {
 
     var params = {
         Bucket: bucket,
-        Key: 'thumbnail-' + keyPrefix + '.gif',
+        Key: generateFileName(keyPrefix, "gif"),
         ContentType: 'image/gif'
     };
 
@@ -58,7 +167,7 @@ function uploadFile(bucket, keyPrefix, cb) {
     ], cb);
 }
 
-function ffmpegPaletteProcess(dlFileName, fileName, cb) {
+function ffmpegPaletteProcess(dlFileName, fileName, width, cb) {
     console.log('Starting FFmpeg');
     console.log('Generating palette...');
     child_process.execFile(
@@ -67,7 +176,7 @@ function ffmpegPaletteProcess(dlFileName, fileName, cb) {
             '-ss', '30',
             '-t', '3',
             '-i', dlFileName,
-            '-vf', 'fps=10,scale=' + config.width + ':-1:flags=lanczos,palettegen',
+            '-vf', 'fps=10,scale=' + width + ':-1:flags=lanczos,palettegen',
             fileName + '.png'
         ], {
             cwd: tempDir
@@ -83,7 +192,7 @@ function ffmpegPaletteProcess(dlFileName, fileName, cb) {
     );
 }
 
-function ffmpegGifProcess(dlFileName, fileName, cb) {
+function ffmpegGifProcess(dlFileName, fileName, width, cb) {
     console.log('Starting FFmpeg');
     console.log('Generating gif...');
     child_process.execFile(
@@ -92,7 +201,7 @@ function ffmpegGifProcess(dlFileName, fileName, cb) {
             "-t", "3",
             "-i", dlFileName,
             "-i", fileName + ".png",
-            "-filter_complex", 'fps=10,scale=' + config.width + ':-1:flags=lanczos[x];[x][1:v]paletteuse',
+            "-filter_complex", 'fps=10,scale=' + width + ':-1:flags=lanczos[x];[x][1:v]paletteuse',
             fileName + ".gif"
         ], {
             cwd: tempDir
@@ -108,7 +217,7 @@ function ffmpegGifProcess(dlFileName, fileName, cb) {
     );
 }
 
-function processVideo(s3Event, srcKey, keyPrefix, cb) {
+function processVideo(s3Event, srcKey, keyPrefix, runtimeConfiguration, cb) {
     var dlFileName = 'temp-' + srcKey;
     var dlFile = path.join(tempDir, dlFileName);
     var filePalette = path.join(tempDir, keyPrefix + '.png');
@@ -122,10 +231,13 @@ function processVideo(s3Event, srcKey, keyPrefix, cb) {
             dlStream.pipe(fs.createWriteStream(dlFile));
         },
         function(cb) {
-            ffmpegPaletteProcess(dlFileName, keyPrefix, cb);
+            ffmpegPaletteProcess(dlFileName, keyPrefix, runtimeConfiguration.width, cb);
         },
         function(cb) {
-            ffmpegGifProcess(dlFileName, keyPrefix, cb);
+            ffmpegGifProcess(dlFileName, keyPrefix, runtimeConfiguration.width, cb);
+        },
+        function(cb) {
+            setVideoDuration(dlFileName, keyPrefix, runtimeConfiguration, cb);
         },
         function(cb) {
             console.log('Deleting downloaded file.');
@@ -136,6 +248,84 @@ function processVideo(s3Event, srcKey, keyPrefix, cb) {
             fs.unlink(filePalette, cb);
         }
     ], cb);
+}
+
+function createVideoThumbnail(s3Event, srcKey, keyPrefix, dstBucket, runtimeConfiguration) {
+    async.series([
+        function(cb) {
+            processVideo(s3Event, srcKey, keyPrefix, runtimeConfiguration, cb);
+        },
+        function(cb) {
+            async.parallel([
+                function(cb) {
+                    uploadFile(dstBucket, keyPrefix, cb)
+                }
+            ], cb);
+        },
+    ], function(err, results) {
+        if (err) {
+            console.error(
+                'Unable to create thumbnail for ' + srcKey +
+                ' and upload to ' + dstBucket +
+                ' due to an error: ' + err
+            );
+        } else {
+            console.log(
+                'Successfully created thumbnail for ' + srcKey +
+                ' and uploaded to ' + dstBucket
+            );
+        }
+
+        console.log(null, "done!");
+    });
+}
+
+function createImageThumbnail(srcBucket, dstBucket, srcKey, keyPrefix, documentType, runtimeConfiguration) {
+    async.waterfall([
+        function download(next) {
+            s3.getObject({
+                    Bucket: srcBucket,
+                    Key: srcKey
+                },
+                next);
+        },
+        function transform(response, next) {
+            gm(response.Body).size(function(err, size) {
+                this.resize(runtimeConfiguration.width)
+                    .toBuffer(documentType, function(err, buffer) {
+                        if (err) {
+                            next(err);
+                        } else {
+                            next(null, response.ContentType, buffer);
+                        }
+                    });
+            });
+        },
+        function upload(contentType, data, next) {
+            s3.putObject({
+                    Bucket: dstBucket,
+                    Key: generateFileName(keyPrefix, documentType),
+                    Body: data,
+                    ContentType: contentType
+                },
+                next);
+        }
+    ], function(err) {
+        if (err) {
+            console.error(
+                'Unable to resize ' + srcBucket + '/' + srcKey +
+                ' and upload to ' + dstBucket +
+                ' due to an error: ' + err
+            );
+        } else {
+            console.log(
+                'Successfully resized ' + srcBucket + '/' + srcKey +
+                ' and uploaded to ' + dstBucket
+            );
+        }
+
+        console.log(null, "done!");
+    });
 }
 
 exports.handler = function(event, context) {
@@ -162,67 +352,32 @@ exports.handler = function(event, context) {
         return;
     }
 
-    if (documentType === "mp4") {
-        async.series([
-            function(cb) {
-                processVideo(s3Event, srcKey, keyPrefix, cb);
-            },
-            function(cb) {
-                async.parallel([
-                    function(cb) {
-                        uploadFile(dstBucket, keyPrefix, cb);
-                    }
-                ], cb);
-            }
-        ], function(err, results) {
-            if (err) context.fail(err);
-            else context.succeed(results);
-        });
-    } else if (documentType === "jpg" || documentType === "png") {
-        async.waterfall([
-            function download(next) {
-                s3.getObject({
-                        Bucket: srcBucket,
-                        Key: srcKey
-                    },
-                    next);
-            },
-            function transform(response, next) {
-                gm(response.Body).size(function(err, size) {
-                    this.resize(config.width)
-                        .toBuffer(documentType, function(err, buffer) {
-                            if (err) {
-                                next(err);
-                            } else {
-                                next(null, response.ContentType, buffer);
-                            }
-                        });
-                });
-            },
-            function upload(contentType, data, next) {
-                s3.putObject({
-                        Bucket: dstBucket,
-                        Key: 'thumbnail-' + keyPrefix + '.' + documentType,
-                        Body: data,
-                        ContentType: contentType
-                    },
-                    next);
-            }
-        ], function(err) {
-            if (err) {
-                console.error(
-                    'Unable to resize ' + srcBucket + '/' + srcKey +
-                    ' and upload to ' + dstBucket +
-                    ' due to an error: ' + err
-                );
-            } else {
-                console.log(
-                    'Successfully resized ' + srcBucket + '/' + srcKey +
-                    ' and uploaded to ' + dstBucket
-                );
+    AWS.config.apiVersions = {
+        lambda: '2015-03-31'
+    };
+
+    var lambda = new AWS.Lambda();
+    var params = {
+        FunctionName: context.functionName
+    };
+    lambda.getFunction(params, function(err, data) {
+        if (!err) {
+            try {
+                var runtimeConfiguration = {};
+                runtimeConfiguration = JSON.parse(data.Configuration.Description);
+
+                if (documentType === "mp4") {
+                    createVideoThumbnail(s3Event, srcKey, keyPrefix, dstBucket, runtimeConfiguration)
+                } else if (documentType === "jpg" || documentType === "png") {
+                    createImageThumbnail(srcBucket, dstBucket, srcKey, keyPrefix, documentType, runtimeConfiguration)
+                }
+            } catch (except) {
+                console.log("Unable to parse description as JSON");
             }
 
-            console.log(null, "done!");
-        });
-    }
+            return runtimeConfiguration;
+        } else {
+            console.log("Could not read configuration");
+        }
+    });
 };
