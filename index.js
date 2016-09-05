@@ -218,7 +218,7 @@ function ffmpegGifProcess(dlFileName, fileName, width, cb) {
 }
 
 function processVideo(s3Event, srcKey, keyPrefix, runtimeConfiguration, cb) {
-    var dlFileName = 'temp-' + srcKey;
+    var dlFileName = srcKey;
     var dlFile = path.join(tempDir, dlFileName);
     var filePalette = path.join(tempDir, keyPrefix + '.png');
 
