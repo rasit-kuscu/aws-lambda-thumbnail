@@ -112,7 +112,7 @@ function setVideoDuration(dlFileName, keyPrefix, runtimeConfiguration, cb) {
 }
 
 function generateFileName(key, extension) {
-    var filename = key.substr(key.lastIndexOf('/') + 1);
+    var filename = key.substr(key.lastIndexOf('/') + 1).replace(/\.[^/.]+$/, '');
     var key = key.split('/');
     key.pop();
     var delimiter = '';
@@ -142,16 +142,18 @@ function s3upload(params, filename, cb) {
         .send(cb);
 }
 
-function uploadFile(bucket, keyPrefix, cb) {
+function uploadFile(bucket, srcKey, cb) {
     console.log('Uploading', 'image/gif');
+    var tempFile = srcKey.split("/").pop();
+    var fileNameWOExtension = tempFile.replace(/\.[^/.]+$/, '');
 
-    var filename = path.join(tempDir, keyPrefix + '.gif');
+    var filename = path.join(tempDir, fileNameWOExtension + '.gif');
     var rmFiles = [filename];
     var readStream = fs.createReadStream(filename);
 
     var params = {
         Bucket: bucket,
-        Key: generateFileName(keyPrefix, "gif"),
+        Key: generateFileName(srcKey, "gif"),
         ContentType: 'image/gif'
     };
 
@@ -167,7 +169,7 @@ function uploadFile(bucket, keyPrefix, cb) {
     ], cb);
 }
 
-function ffmpegPaletteProcess(dlFileName, fileName, width, cb) {
+function ffmpegPaletteProcess(dlFileName, fileNameWOExtension, width, cb) {
     console.log('Starting FFmpeg');
     console.log('Generating palette...');
     child_process.execFile(
@@ -177,7 +179,7 @@ function ffmpegPaletteProcess(dlFileName, fileName, width, cb) {
             '-t', '3',
             '-i', dlFileName,
             '-vf', 'fps=10,scale=' + width + ':-1:flags=lanczos,palettegen',
-            fileName + '.png'
+            fileNameWOExtension + '.png'
         ], {
             cwd: tempDir
         },
@@ -192,7 +194,7 @@ function ffmpegPaletteProcess(dlFileName, fileName, width, cb) {
     );
 }
 
-function ffmpegGifProcess(dlFileName, fileName, width, cb) {
+function ffmpegGifProcess(dlFileName, fileNameWOExtension, width, cb) {
     console.log('Starting FFmpeg');
     console.log('Generating gif...');
     child_process.execFile(
@@ -200,9 +202,9 @@ function ffmpegGifProcess(dlFileName, fileName, width, cb) {
             "-ss", "30",
             "-t", "3",
             "-i", dlFileName,
-            "-i", fileName + ".png",
+            "-i", fileNameWOExtension + ".png",
             "-filter_complex", 'fps=10,scale=' + width + ':-1:flags=lanczos[x];[x][1:v]paletteuse',
-            fileName + ".gif"
+            fileNameWOExtension + ".gif"
         ], {
             cwd: tempDir
         },
@@ -217,10 +219,12 @@ function ffmpegGifProcess(dlFileName, fileName, width, cb) {
     );
 }
 
-function processVideo(s3Event, srcKey, keyPrefix, runtimeConfiguration, cb) {
-    var dlFileName = srcKey;
+function processVideo(s3Event, srcKey, runtimeConfiguration, cb) {
+    var dlFileName = srcKey.split("/").pop();
+    var fileNameWOExtension = dlFileName.replace(/\.[^/.]+$/, '');
+
     var dlFile = path.join(tempDir, dlFileName);
-    var filePalette = path.join(tempDir, keyPrefix + '.png');
+    var filePalette = path.join(tempDir, fileNameWOExtension + '.png');
 
     async.series([
         function(cb) {
@@ -231,13 +235,13 @@ function processVideo(s3Event, srcKey, keyPrefix, runtimeConfiguration, cb) {
             dlStream.pipe(fs.createWriteStream(dlFile));
         },
         function(cb) {
-            ffmpegPaletteProcess(dlFileName, keyPrefix, runtimeConfiguration.width, cb);
+            ffmpegPaletteProcess(dlFileName, fileNameWOExtension, runtimeConfiguration.width, cb);
         },
         function(cb) {
-            ffmpegGifProcess(dlFileName, keyPrefix, runtimeConfiguration.width, cb);
+            ffmpegGifProcess(dlFileName, fileNameWOExtension, runtimeConfiguration.width, cb);
         },
         function(cb) {
-            setVideoDuration(dlFileName, keyPrefix, runtimeConfiguration, cb);
+            setVideoDuration(dlFileName, fileNameWOExtension, runtimeConfiguration, cb);
         },
         function(cb) {
             console.log('Deleting downloaded file.');
@@ -250,15 +254,15 @@ function processVideo(s3Event, srcKey, keyPrefix, runtimeConfiguration, cb) {
     ], cb);
 }
 
-function createVideoThumbnail(s3Event, srcKey, keyPrefix, dstBucket, runtimeConfiguration) {
+function createVideoThumbnail(s3Event, srcKey, dstBucket, runtimeConfiguration) {
     async.series([
         function(cb) {
-            processVideo(s3Event, srcKey, keyPrefix, runtimeConfiguration, cb);
+            processVideo(s3Event, srcKey, runtimeConfiguration, cb);
         },
         function(cb) {
             async.parallel([
                 function(cb) {
-                    uploadFile(dstBucket, keyPrefix, cb)
+                    uploadFile(dstBucket, srcKey, cb)
                 }
             ], cb);
         },
@@ -367,7 +371,7 @@ exports.handler = function(event, context) {
                 runtimeConfiguration = JSON.parse(data.Configuration.Description);
 
                 if (documentType === "mp4") {
-                    createVideoThumbnail(s3Event, srcKey, keyPrefix, dstBucket, runtimeConfiguration)
+                    createVideoThumbnail(s3Event, srcKey, dstBucket, runtimeConfiguration)
                 } else if (documentType === "jpg" || documentType === "png") {
                     createImageThumbnail(srcBucket, dstBucket, srcKey, keyPrefix, documentType, runtimeConfiguration)
                 }
